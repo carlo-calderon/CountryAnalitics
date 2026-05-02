@@ -8,11 +8,19 @@ export default async function Home() {
   const data = await fetchWorldBankHistory();
 
   // Simple analytics
-  const data2024 = data.map(c => ({ ...c, ...(c.history[2024] || { gini: 0, gdpPpp: 0 }) }));
+  const data2024 = data.map(c => {
+    const latest = c.history[2024] || {};
+    return {
+      name: c.name,
+      gini: (latest.gini as number) || 0,
+      gdpPpp: (latest.gdpPpp as number) || 0
+    };
+  });
+  
   const totalCountries = data.length;
-  const avgGini = data2024.reduce((acc, curr) => acc + (curr.gini || 0), 0) / totalCountries;
-  const highestGdp = [...data2024].sort((a, b) => (b.gdpPpp || 0) - (a.gdpPpp || 0))[0];
-  const lowestGini = [...data2024].sort((a, b) => (a.gini || 0) - (b.gini || 0))[0];
+  const avgGini = data2024.reduce((acc, curr) => acc + curr.gini, 0) / totalCountries;
+  const highestGdp = [...data2024].sort((a, b) => b.gdpPpp - a.gdpPpp)[0];
+  const lowestGini = [...data2024].sort((a, b) => a.gini - b.gini)[0];
 
   return (
     <main className="animate-fade-in">
