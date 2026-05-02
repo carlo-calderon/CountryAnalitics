@@ -1,90 +1,99 @@
-export interface CountryYearlyData {
-  gini: number | null;
-  gdpPpp: number | null;
-}
-
 export interface CountryHistory {
   id: string;
   name: string;
   region: string;
-  history: Record<number, CountryYearlyData>;
+  history: Record<number, Record<string, number | null>>;
 }
 
+export const INDICATORS: Record<string, string> = {
+  gini: 'SI.POV.GINI',
+  gdpPpp: 'NY.GDP.PCAP.PP.CD',
+  poverty: 'SI.POV.DDAY',
+  debt: 'GC.DOD.TOTL.GD.ZS',
+  health: 'SH.XPD.CHEX.GD.ZS',
+  education: 'SE.XPD.TOTL.GD.ZS',
+  lifeExpectancy: 'SP.DYN.LE00.IN',
+  population: 'SP.POP.TOTL'
+};
+
+export const INDICATOR_NAMES: Record<string, string> = {
+  gini: 'Índice de Gini',
+  gdpPpp: 'PIB per cápita PPA (USD)',
+  poverty: '% Pobreza ($2.15/día)',
+  debt: '% Deuda Central / PIB',
+  health: '% Gasto Salud / PIB',
+  education: '% Gasto Educación / PIB',
+  lifeExpectancy: 'Esperanza de Vida (Años)',
+  population: 'Población Total'
+};
+
 export async function fetchWorldBankHistory(): Promise<CountryHistory[]> {
-  const GINI_INDICATOR = 'SI.POV.GINI';
-  const GDP_PPP_INDICATOR = 'NY.GDP.PCAP.PP.CD';
   const START_YEAR = 1960;
   const END_YEAR = 2024;
   
   try {
-    const [giniRes, gdpRes, countriesRes] = await Promise.all([
-      fetch(`https://api.worldbank.org/v2/country/all/indicator/${GINI_INDICATOR}?format=json&per_page=20000&date=${START_YEAR}:${END_YEAR}`),
-      fetch(`https://api.worldbank.org/v2/country/all/indicator/${GDP_PPP_INDICATOR}?format=json&per_page=20000&date=${START_YEAR}:${END_YEAR}`),
-      fetch(`https://api.worldbank.org/v2/country?format=json&per_page=1000`)
-    ]);
-
-    const giniData = await giniRes.json();
-    const gdpData = await gdpRes.json();
+    // Fetch countries first
+    const countriesRes = await fetch(`https://api.worldbank.org/v2/country?format=json&per_page=1000`);
     const countriesData = await countriesRes.json();
-
-    if (!giniData[1] || !gdpData[1] || !countriesData[1]) return [];
+    if (!countriesData[1]) return [];
 
     const countriesMap: Record<string, CountryHistory> = {};
-    
     countriesData[1].forEach((c: any) => {
       if (c.region && c.region.id !== 'NA') {
-        countriesMap[c.id] = {
-          id: c.id,
-          name: c.name,
-          region: c.region.value.trim(),
-          history: {}
-        };
+        countriesMap[c.id] = { id: c.id, name: c.name, region: c.region.value.trim(), history: {} };
       }
     });
 
-    // Process Gini
-    giniData[1].forEach((item: any) => {
-      const code = item.countryiso3code || item.country.id;
-      if (countriesMap[code] && item.value !== null) {
-        const year = parseInt(item.date);
-        if (!countriesMap[code].history[year]) countriesMap[code].history[year] = { gini: null, gdpPpp: null };
-        countriesMap[code].history[year].gini = item.value;
+    // Fetch all indicators in parallel
+    const indicatorKeys = Object.keys(INDICATORS);
+    const indicatorPromises = indicatorKeys.map(key => 
+      fetch(`https://api.worldbank.org/v2/country/all/indicator/${INDICATORS[key]}?format=json&per_page=20000&date=${START_YEAR}:${END_YEAR}`)
+        .then(res => res.json())
+    );
+
+    const results = await Promise.all(indicatorPromises);
+
+    results.forEach((data, index) => {
+      const key = indicatorKeys[index];
+      if (data[1]) {
+        data[1].forEach((item: any) => {
+          const code = item.countryiso3code || item.country.id;
+          if (countriesMap[code]) {
+            const year = parseInt(item.date);
+            if (!countriesMap[code].history[year]) {
+              countriesMap[code].history[year] = {};
+              indicatorKeys.forEach(k => countriesMap[code].history[year][k] = null);
+            }
+            // Safety filter for extreme outliers
+            let val = item.value;
+            if (key === 'gdpPpp' && val > 300000) val = null;
+            countriesMap[code].history[year][key] = val;
+          }
+        });
       }
     });
 
-    // Process GDP PPP
-    gdpData[1].forEach((item: any) => {
-      const code = item.countryiso3code || item.country.id;
-      if (countriesMap[code] && item.value !== null && item.value < 300000) {
-        const year = parseInt(item.date);
-        if (!countriesMap[code].history[year]) countriesMap[code].history[year] = { gini: null, gdpPpp: null };
-        countriesMap[code].history[year].gdpPpp = item.value;
-      }
-    });
-
-    // Fill gaps: Carry forward logic
+    // Carry forward logic for all indicators
     Object.values(countriesMap).forEach(country => {
-      let lastGini: number | null = null;
-      let lastGdp: number | null = null;
+      const lastValues: Record<string, number | null> = {};
+      indicatorKeys.forEach(k => lastValues[k] = null);
 
       for (let y = START_YEAR; y <= END_YEAR; y++) {
-        const yearData = country.history[y] || { gini: null, gdpPpp: null };
-        
-        if (yearData.gini !== null) lastGini = yearData.gini;
-        else yearData.gini = lastGini;
-
-        if (yearData.gdpPpp !== null) lastGdp = yearData.gdpPpp;
-        else yearData.gdpPpp = lastGdp;
-
-        country.history[y] = yearData;
+        if (!country.history[y]) {
+          country.history[y] = { ...lastValues };
+        } else {
+          indicatorKeys.forEach(k => {
+            if (country.history[y][k] !== null) lastValues[k] = country.history[y][k];
+            else country.history[y][k] = lastValues[k];
+          });
+        }
       }
     });
 
     return Object.values(countriesMap).filter(c => {
-      // Keep countries that have at least one data point for both metrics eventually
       const years = Object.keys(c.history);
-      return years.some(y => c.history[parseInt(y)].gini !== null) && 
-             years.some(y => c.history[parseInt(y)].gdpPpp !== null);
+      // Keep countries that have at least some data in the last 20 years
+      return years.some(y => parseInt(y) > 2000 && c.history[parseInt(y)].gdpPpp !== null);
     });
 
   } catch (error) {
