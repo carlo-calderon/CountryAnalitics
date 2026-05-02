@@ -4,15 +4,13 @@ import React, { useMemo, useState, useEffect, useRef } from 'react';
 import {
   ScatterChart,
   Scatter,
-  XAxis,
   YAxis,
   ZAxis,
   CartesianGrid,
   Tooltip,
   ResponsiveContainer,
   Cell,
-  Line,
-  ComposedChart
+  XAxis
 } from 'recharts';
 import { motion, AnimatePresence } from 'framer-motion';
 import { CountryHistory, INDICATOR_NAMES } from '@/lib/worldbank';
@@ -61,7 +59,7 @@ const CustomTooltip = ({ active, payload, xLabel, yLabel }: any) => {
 };
 
 export default function DevelopmentChart({ data }: DevelopmentChartProps) {
-  const [currentYear, setCurrentYear] = useState(1990);
+  const [currentYear, setCurrentYear] = useState(2024);
   const [isPlaying, setIsPlaying] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCountryId, setSelectedCountryId] = useState<string>('CHL');
@@ -76,14 +74,37 @@ export default function DevelopmentChart({ data }: DevelopmentChartProps) {
 
   const timerRef = useRef<NodeJS.Timeout | null>(null);
 
+  const { minYear, maxYear } = useMemo(() => {
+    let min = 2024;
+    let max = 1960;
+    data.forEach(country => {
+      Object.entries(country.history).forEach(([yearStr, values]) => {
+        if (values[xAxis] !== null && values[yAxis] !== null) {
+          const year = parseInt(yearStr);
+          if (year < min) min = year;
+          if (year > max) max = year;
+        }
+      });
+    });
+    // Fallback if no overlap found
+    if (min > max) return { minYear: 1990, maxYear: 2024 };
+    return { minYear: min, maxYear: max };
+  }, [data, xAxis, yAxis]);
+
   useEffect(() => {
     if (isPlaying) {
       timerRef.current = setInterval(() => {
-        setCurrentYear(prev => prev >= 2024 ? (setIsPlaying(false), prev) : prev + 1);
+        setCurrentYear(prev => prev >= maxYear ? (setIsPlaying(false), prev) : prev + 1);
       }, 400);
     } else if (timerRef.current) clearInterval(timerRef.current);
     return () => { if (timerRef.current) clearInterval(timerRef.current); };
-  }, [isPlaying]);
+  }, [isPlaying, maxYear]);
+
+  useEffect(() => {
+    // If current year is out of new bounds, snap it
+    if (currentYear < minYear) setCurrentYear(minYear);
+    if (currentYear > maxYear) setCurrentYear(maxYear);
+  }, [minYear, maxYear, currentYear]);
 
   const indicatorKeys = Object.keys(INDICATOR_NAMES).filter(k => k !== 'population');
 
@@ -158,7 +179,9 @@ export default function DevelopmentChart({ data }: DevelopmentChartProps) {
       .map(([year, values]) => ({ 
         year: parseInt(year), 
         xVal: values[xAxis], 
-        yVal: values[yAxis] 
+        yVal: values[yAxis],
+        name: country.name,
+        renderColor: '#fff' // Color for the line tooltip if it appears
       }))
       .filter(v => v.year <= currentYear && v.xVal !== null && v.yVal !== null)
       .sort((a, b) => a.year - b.year);
@@ -168,6 +191,8 @@ export default function DevelopmentChart({ data }: DevelopmentChartProps) {
     if (!searchQuery || searchQuery.length < 2) return [];
     return data.filter(c => c.name.toLowerCase().includes(searchQuery.toLowerCase())).slice(0, 5);
   }, [data, searchQuery]);
+
+  const selectedCountry = data.find(c => c.id === selectedCountryId);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
@@ -238,25 +263,35 @@ export default function DevelopmentChart({ data }: DevelopmentChartProps) {
            <h2 style={{ fontSize: '2.5rem', fontWeight: '900', opacity: 0.1, margin: 0 }}>{currentYear}</h2>
         </div>
         <ResponsiveContainer width="100%" height="100%">
-          <ComposedChart margin={{ top: 20, right: 20, bottom: 20, left: 10 }}>
+          <ScatterChart margin={{ top: 20, right: 20, bottom: 20, left: 10 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" vertical={false} />
             <XAxis type="number" dataKey="xVal" domain={['auto', 'auto']} tick={{ fill: 'rgba(255,255,255,0.5)', fontSize: 10 }} stroke="rgba(255,255,255,0.1)" />
             <YAxis type="number" dataKey="yVal" domain={['auto', 'auto']} tick={{ fill: 'rgba(255,255,255,0.5)', fontSize: 10 }} stroke="rgba(255,255,255,0.1)" tickFormatter={(v) => v > 1000 ? `$${Math.round(v/1000)}k` : v.toFixed(1)} />
             <ZAxis type="number" dataKey="zVal" range={[40, 400]} />
+            
             <Tooltip 
               content={<CustomTooltip xLabel={INDICATOR_NAMES[xAxis]} yLabel={INDICATOR_NAMES[yAxis]} />} 
-              trigger="hover"
-              shared={false}
-              cursor={{ stroke: 'rgba(255,255,255,0.2)', strokeWidth: 1, strokeDasharray: '5 5' }}
+              cursor={{ strokeDasharray: '3 3', stroke: 'rgba(255,255,255,0.2)' }}
             />
-            {trajectoryData.length > 1 && <Line data={trajectoryData} type="monotone" dataKey="yVal" stroke="#fff" strokeWidth={1} dot={false} isAnimationActive={false} opacity={0.3} />}
+            
+            {/* Trajectory as a Scatter with line */}
+            {trajectoryData.length > 1 && (
+              <Scatter 
+                data={trajectoryData} 
+                line={{ stroke: '#fff', strokeWidth: 1, opacity: 0.3 }} 
+                shape={() => null} // Hide dots for trajectory
+                isAnimationActive={false}
+              />
+            )}
+
             <Scatter name="Países" data={filteredData} isAnimationActive={false}>
               {filteredData.map((entry, index) => <Cell key={`cell-${index}`} fill={entry.renderColor} fillOpacity={entry.id === selectedCountryId ? 1 : 0.6} stroke={entry.id === selectedCountryId ? '#fff' : 'none'} strokeWidth={entry.id === selectedCountryId ? 2 : 0} />)}
             </Scatter>
+
             <Scatter name="Centros" data={regionalCenters} isAnimationActive={false}>
               {regionalCenters.map((entry, index) => <Cell key={`center-${index}`} fill={entry.renderColor} fillOpacity={0.9} stroke="#fff" strokeWidth={2} style={{ filter: 'drop-shadow(0 0 5px rgba(255,255,255,0.2))' }} />)}
             </Scatter>
-          </ComposedChart>
+          </ScatterChart>
         </ResponsiveContainer>
       </div>
 
@@ -264,16 +299,16 @@ export default function DevelopmentChart({ data }: DevelopmentChartProps) {
         <button onClick={() => setIsPlaying(!isPlaying)} style={{ background: 'var(--accent-primary)', border: 'none', borderRadius: '50%', width: '32px', height: '32px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', color: 'white' }}>
           {isPlaying ? <Pause size={16} /> : <Play size={16} style={{ marginLeft: '2px' }} />}
         </button>
-        <button onClick={() => { setCurrentYear(1990); setIsPlaying(false); }} style={{ background: 'transparent', border: '1px solid var(--card-border)', borderRadius: '50%', width: '24px', height: '24px', cursor: 'pointer', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <button onClick={() => { setCurrentYear(minYear); setIsPlaying(false); }} style={{ background: 'transparent', border: '1px solid var(--card-border)', borderRadius: '50%', width: '24px', height: '24px', cursor: 'pointer', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           <RotateCcw size={12} />
         </button>
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.6rem', opacity: 0.5 }}>
-            <span>1990</span>
+            <span>{minYear}</span>
             <span style={{ color: 'var(--accent-primary)', fontWeight: 'bold' }}>{currentYear}</span>
-            <span>2024</span>
+            <span>{maxYear}</span>
           </div>
-          <input type="range" min="1990" max="2024" value={currentYear} onChange={(e) => setCurrentYear(parseInt(e.target.value))} style={{ width: '100%', accentColor: 'var(--accent-primary)', height: '2px', cursor: 'pointer' }} />
+          <input type="range" min={minYear} max={maxYear} value={currentYear} onChange={(e) => setCurrentYear(parseInt(e.target.value))} style={{ width: '100%', accentColor: 'var(--accent-primary)', height: '2px', cursor: 'pointer' }} />
         </div>
       </div>
     </div>
